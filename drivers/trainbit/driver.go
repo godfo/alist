@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"net/url"
 	"strings"
 
+	"github.com/alist-org/alist/v3/drivers/base"
 	"github.com/alist-org/alist/v3/internal/driver"
 	"github.com/alist-org/alist/v3/internal/errs"
 	"github.com/alist-org/alist/v3/internal/model"
@@ -31,7 +31,7 @@ func (d *Trainbit) GetAddition() driver.Additional {
 }
 
 func (d *Trainbit) Init(ctx context.Context) error {
-	http.DefaultClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+	base.HttpClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		return http.ErrUseLastResponse
 	}
 	var err error
@@ -58,7 +58,7 @@ func (d *Trainbit) List(ctx context.Context, dir model.Obj, args model.ListArgs)
 		return nil, err
 	}
 	var jsonData any
-	json.Unmarshal(data, &jsonData)
+	err = json.Unmarshal(data, &jsonData)
 	if err != nil {
 		return nil, err
 	}
@@ -114,28 +114,23 @@ func (d *Trainbit) Remove(ctx context.Context, obj model.Obj) error {
 	return err
 }
 
-func (d *Trainbit) Put(ctx context.Context, dstDir model.Obj, stream model.FileStreamer, up driver.UpdateProgress) error {
+func (d *Trainbit) Put(ctx context.Context, dstDir model.Obj, s model.FileStreamer, up driver.UpdateProgress) error {
 	endpoint, _ := url.Parse("https://tb28.trainbit.com/api/upload/send_raw/")
 	query := &url.Values{}
 	query.Add("q", strings.Split(dstDir.GetID(), "_")[1])
 	query.Add("guid", guid)
-	query.Add("name", url.QueryEscape(local2provider(stream.GetName(), false) + "."))
+	query.Add("name", url.QueryEscape(local2provider(s.GetName(), false)+"."))
 	endpoint.RawQuery = query.Encode()
-	var total int64
-	total = 0
-	progressReader := &ProgressReader{
-		stream,
-		func(byteNum int) {
-			total += int64(byteNum)
-			up(int(math.Round(float64(total) / float64(stream.GetSize()) * 100)))
-		},
-	}
-	req, err := http.NewRequest(http.MethodPost, endpoint.String(), progressReader)
+	progressReader := driver.NewLimitedUploadStream(ctx, &driver.ReaderUpdatingProgress{
+		Reader:         s,
+		UpdateProgress: up,
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), progressReader)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "text/json; charset=UTF-8")
-	_, err = http.DefaultClient.Do(req)
+	_, err = base.HttpClient.Do(req)
 	return err
 }
 
